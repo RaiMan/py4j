@@ -4,6 +4,37 @@ Changelog
 The changelog describes in plain English the changes that occurred between Py4J
 releases.
 
+Py4J 0.10.9.1
+-------------
+
+- Release date: September 7th 2020
+- Java side: fixed a regression in GatewayServer that ignored the passed port.
+- `tickets closed for 0.10.9.1 release
+  <https://github.com/bartdag/py4j/milestone/27?closed=1>`_
+
+
+Py4J 0.10.9
+-----------
+
+- Release date: January 25th 2019
+- Python side: launch_gateway can now optionally returns the Popen process
+  object.
+- Python side: launch_gateway can now set the current working directory.
+- Python side: improved support for Python 3.7 by importing from
+  collections.abc.
+- Python side: improved support for Python 3.7 by correctly escaping special
+  characters in docstrings.
+- Python side: magic members such as __name__ are no longer sent to the Java
+  side. An AttributeError exception is instead raised.
+- Java side: set explicit Gradle version and use gradlew to avoid issues with
+  more recent versions of Gradle.
+- Java side: the GatewayServer CLI no longer requires an explicit port and can
+  listen to the default port.
+- Java side: Travis no longer tries to build Py4J with Java 6 and 7. These
+  versions are no longer available in default images.
+- Java side: array elements can be set to None/null for non-primitive arrays.
+- `tickets closed for 0.10.9 release
+  <https://github.com/bartdag/py4j/issues?q=is%3Aissue+milestone%3A0.10.9+is%3Aclosed>`_
 
 Py4J 0.10.8 and Py4J 0.10.8.1
 -----------------------------

@@ -45,6 +45,7 @@ class NullHandler(logging.Handler):
     def emit(self, record):
         pass
 
+
 null_handler = NullHandler()
 logging.getLogger("py4j").addHandler(null_handler)
 logger = logging.getLogger("py4j.java_gateway")
@@ -220,7 +221,8 @@ def launch_gateway(port=0, jarpath="", classpath="", javaopts=[],
                    die_on_exit=False, redirect_stdout=None,
                    redirect_stderr=None, daemonize_redirect=True,
                    java_path="java", create_new_process_group=False,
-                   enable_auth=False):
+                   enable_auth=False, cwd=None, return_proc=False,
+                   use_shell=False):
     """Launch a `Gateway` in a new Java process.
 
     The redirect parameters accept file-like objects, Queue, or deque. When
@@ -268,6 +270,12 @@ def launch_gateway(port=0, jarpath="", classpath="", javaopts=[],
         though.
     :param enable_auth: If True, the server will require clients to provide an
         authentication token when connecting.
+    :param cwd: If not None, path that will be used as the current working
+        directory of the Java process.
+    :param return_proc: If True, returns the Popen object returned when the JVM
+        process was created.
+    :param use_shell – If True, Popen will be start the java process with
+        shell=True
 
     :rtype: the port number of the `Gateway` server or, when auth enabled,
             a 2-tuple with the port number and the auth token.
@@ -319,8 +327,10 @@ def launch_gateway(port=0, jarpath="", classpath="", javaopts=[],
     if create_new_process_group:
         popen_kwargs.update(get_create_new_process_group_kwargs())
 
-    proc = Popen(command, stdout=PIPE, stdin=PIPE, stderr=stderr,
-                 **popen_kwargs)
+    popen_kwargs["shell"] = use_shell
+    proc = Popen(
+        command, stdout=PIPE, stdin=PIPE, stderr=stderr, cwd=cwd,
+        **popen_kwargs)
 
     # Determine which port the server started on (needed to support
     # ephemeral ports)
@@ -346,9 +356,17 @@ def launch_gateway(port=0, jarpath="", classpath="", javaopts=[],
         quiet_close(stderr)
 
     if enable_auth:
-        return (_port, _auth_token)
+        output = (_port, _auth_token)
     else:
-        return _port
+        output = _port
+
+    if return_proc:
+        if isinstance(output, tuple):
+            output = output + (proc, )
+        else:
+            output = (_port, proc)
+
+    return output
 
 
 def get_field(java_object, field_name):
@@ -614,6 +632,12 @@ def do_client_auth(command, input_stream, sock, auth_token):
             "a connection")
         raise Py4JAuthenticationError(cause=e)
     return True
+
+
+def is_magic_member(name):
+    """Returns True if the name starts and ends with __
+    """
+    return name.startswith("__") and name.endswith("__")
 
 
 def _garbage_collect_object(gateway_client, target_id):
@@ -1339,13 +1363,8 @@ class JavaObject(object):
         return self._gateway_doc
 
     def __getattr__(self, name):
-        if name == "__call__":
-            # Provide an explicit definition for __call__ so that a JavaMember
-            # does not get created for it. This serves two purposes:
-            # 1) IPython (and others?) stop showing incorrect help indicating
-            #    that this is callable
-            # 2) A TypeError(object not callable) is raised if someone does try
-            #    to call here
+        if is_magic_member(name):
+            # don't propagate any magic methods to Java
             raise AttributeError
 
         if name not in self._methods:
@@ -1490,7 +1509,8 @@ class JavaClass(object):
                 "{0} does not exist in the JVM".format(self._fqn))
 
     def __getattr__(self, name):
-        if name in ["__str__", "__repr__"]:
+        if is_magic_member(name):
+            # don't propagate any magic methods to Java
             raise AttributeError
 
         command = proto.REFLECTION_COMMAND_NAME +\
@@ -1606,11 +1626,13 @@ class JavaPackage(object):
         if name == UserHelpAutoCompletion.KEY:
             return UserHelpAutoCompletion
 
-        if name in ["__str__", "__repr__"]:
-            raise AttributeError
-
         if name == "__call__":
             raise Py4JError("Trying to call a package.")
+
+        if is_magic_member(name):
+            # don't propagate any magic methods to Java
+            raise AttributeError
+
         new_fqn = self._fqn + "." + name
         command = proto.REFLECTION_COMMAND_NAME +\
             proto.REFL_GET_UNKNOWN_SUB_COMMAND_NAME +\
@@ -1713,6 +1735,12 @@ class JavaGateway(object):
     * The `jvm` field of `JavaGateway` enables user to access classes, static
       members (fields and methods) and call constructors.
 
+    * The `java_process` field of a `JavaGateway` instance is a
+      subprocess.Popen object for the Java process that the `JavaGateway`
+      is connected to, or None if the `JavaGateway` connected to a preexisting
+      Java process (in which case we cannot directly access that process from
+      Python).
+
     Methods that are not defined by `JavaGateway` are always redirected to
     `entry_point`. For example, ``gateway.doThat()`` is equivalent to
     ``gateway.entry_point.doThat()``. This is a trade-off between convenience
@@ -1724,7 +1752,8 @@ class JavaGateway(object):
             python_proxy_port=DEFAULT_PYTHON_PROXY_PORT,
             start_callback_server=False, auto_convert=False, eager_load=False,
             gateway_parameters=None, callback_server_parameters=None,
-            python_server_entry_point=None):
+            python_server_entry_point=None,
+            java_process=None):
         """
         :param gateway_parameters: An instance of `GatewayParameters` used to
             configure the various options of the gateway.
@@ -1736,6 +1765,9 @@ class JavaGateway(object):
 
         :param python_server_entry_point: can be requested by the Java side if
             Java is driving the communication.
+
+        :param java_process: the subprocess.Popen object for the Java process
+            that the `JavaGateway` shall connect to, if available.
         """
 
         self.gateway_parameters = gateway_parameters
@@ -1789,6 +1821,8 @@ class JavaGateway(object):
             self._eager_load()
         if self.callback_server_parameters.eager_load:
             self.start_callback_server(self.callback_server_parameters)
+
+        self.java_process = java_process
 
     def _create_gateway_client(self):
         gateway_client = GatewayClient(
@@ -2035,9 +2069,9 @@ class JavaGateway(object):
             will be generated.
 
         :param pattern: Star-pattern used to filter the members. For example
-            "get\*Foo" may return getMyFoo, getFoo, getFooBar, but not
+            "get\\*Foo" may return getMyFoo, getFoo, getFooBar, but not
             bargetFoo. The pattern is matched against the entire signature.
-            To match only the name of a method, use "methodName(\*".
+            To match only the name of a method, use "methodName(\\*".
 
         :param short_name: If True, only the simple name of the parameter
             types and return types will be displayed. If False, the fully
@@ -2055,7 +2089,8 @@ class JavaGateway(object):
             cls, port=0, jarpath="", classpath="", javaopts=[],
             die_on_exit=False, redirect_stdout=None,
             redirect_stderr=None, daemonize_redirect=True, java_path="java",
-            create_new_process_group=False, enable_auth=False):
+            create_new_process_group=False, enable_auth=False, cwd=None,
+            use_shell=False):
         """Launch a `Gateway` in a new Java process and create a default
         :class:`JavaGateway <py4j.java_gateway.JavaGateway>` to connect to
         it.
@@ -2101,6 +2136,10 @@ class JavaGateway(object):
             scenarios though.
         :param enable_auth: If True, the server will require clients to provide
             an authentication token when connecting.
+        :param cwd: If not None, path that will be used as the current working
+            directory of the Java process.
+        :param use_shell – If True, Popen will be start the java process with
+            shell=True
 
         :rtype: a :class:`JavaGateway <py4j.java_gateway.JavaGateway>`
             connected to the `Gateway` server.
@@ -2110,14 +2149,16 @@ class JavaGateway(object):
             redirect_stdout=redirect_stdout, redirect_stderr=redirect_stderr,
             daemonize_redirect=daemonize_redirect, java_path=java_path,
             create_new_process_group=create_new_process_group,
-            enable_auth=enable_auth)
+            enable_auth=enable_auth, cwd=cwd, return_proc=True,
+            use_shell=use_shell)
         if enable_auth:
-            _port, _auth_token = _ret
+            _port, _auth_token, proc = _ret
         else:
-            _port, _auth_token = _ret, None
+            _port, proc, _auth_token = _ret + (None, )
         gateway = JavaGateway(
             gateway_parameters=GatewayParameters(port=_port,
-                                                 auth_token=_auth_token))
+                                                 auth_token=_auth_token),
+            java_process=proc)
         return gateway
 
 
@@ -2485,6 +2526,7 @@ class PythonProxyPool(object):
     def __len__(self):
         with self.lock:
             return len(self.dict)
+
 
 # Basic registration
 register_output_converter(

@@ -805,7 +805,7 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 
 	/**
 	 * <p>
-	 * Main method to start a local GatewayServer on a given port.
+	 * Main method to start a local GatewayServer on either a given port or the default one.
 	 * The listening port is printed to stdout so that clients can start
 	 * servers on ephemeral ports.
 	 * </p>
@@ -818,29 +818,26 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 	 * </p>
 	 */
 	public static void main(String[] args) {
-		int port;
+		int port = DEFAULT_PORT;
 		boolean dieOnBrokenPipe = false;
 		boolean enableAuth = false;
-		String usage = "usage: [--die-on-broken-pipe] [--enable-auth] port";
+		String usage = "usage: [--die-on-broken-pipe] [--enable-auth] [port]";
 
-		if (args.length == 0) {
-			System.err.println(usage);
-			System.exit(1);
-		}
-
-		for (int i = 0; i < args.length - 1; i++) {
+		for (int i = 0; i < args.length; i++) {
 			String opt = args[i];
 			if (opt.equals("--die-on-broken-pipe")) {
 				dieOnBrokenPipe = true;
 			} else if (opt.equals("--enable-auth")) {
 				enableAuth = true;
 			} else {
-				System.err.println(usage);
-				System.exit(1);
+				try {
+					port = Integer.parseInt(opt);
+				} catch (NumberFormatException e) {
+					System.err.println(usage);
+					System.exit(1);
+				}
 			}
 		}
-
-		port = Integer.parseInt(args[args.length - 1]);
 
 		String authToken = null;
 		if (enableAuth) {
